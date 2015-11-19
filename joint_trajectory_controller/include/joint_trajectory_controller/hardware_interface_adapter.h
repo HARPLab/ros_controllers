@@ -336,7 +336,7 @@ public:
 
   void updateCommand(const ros::Time&     /*time*/,
                      const ros::Duration& period,
-                     const State&         /*desired_state*/,
+                     const State&         desired_state,
                      const State&         state_error)
   {
     const unsigned int n_joints = joint_handles_ptr_->size();
@@ -354,7 +354,7 @@ public:
 
       dof->setPosition((*joint_handles_ptr_)[i].getPosition());
       dof->setVelocity((*joint_handles_ptr_)[i].getVelocity());
-      dof->setAcceleration(0.);
+      dof->setAcceleration(desired_state.acceleration[i]);
     }
 
     skeleton->computeInverseDynamics();
