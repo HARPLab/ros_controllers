@@ -1,6 +1,14 @@
 cmake_minimum_required(VERSION 2.8.3)
 project(joint_trajectory_controller)
 
+include(CheckCXXCompilerFlag)
+CHECK_CXX_COMPILER_FLAG("-std=c++11" COMPILER_SUPPORTS_CXX11)
+if(COMPILER_SUPPORTS_CXX11)
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
+else()
+  message(FATAL_ERROR "The compiler ${CMAKE_CXX_COMPILER} has no C++11 support. Please use a different C++ compiler.")
+endif()
+
 # Load catkin and all dependencies required for this package
 find_package(catkin
   REQUIRED COMPONENTS
@@ -19,6 +27,9 @@ find_package(catkin
     xacro
 )
 
+find_package(DART REQUIRED COMPONENTS core)
+find_package(r3 REQUIRED)
+
 # Declare catkin package
 catkin_package(
   CATKIN_DEPENDS
@@ -34,11 +45,19 @@ catkin_package(
   trajectory_msgs
   controller_manager
   xacro
+  DEPENDS
+  DART
+  r3
   INCLUDE_DIRS include
   LIBRARIES ${PROJECT_NAME}
 )
 
 include_directories(include ${Boost_INCLUDE_DIR} ${catkin_INCLUDE_DIRS})
+
+include_directories(SYSTEM
+  ${DART_INCLUDE_DIRS}
+  ${r3_INCLUDE_DIRS}
+)
 
 add_library(${PROJECT_NAME} src/joint_trajectory_controller.cpp
                             include/joint_trajectory_controller/hardware_interface_adapter.h
@@ -53,7 +72,10 @@ add_library(${PROJECT_NAME} src/joint_trajectory_controller.cpp
                             include/trajectory_interface/pos_vel_acc_state.h)
 
 target_link_libraries(${PROJECT_NAME} ${catkin_LIBRARIES})
-
+target_link_libraries(${PROJECT_NAME}
+  ${DART_LIBRARIES}
+  ${r3_LIBRARIES}
+)
 
 if(CATKIN_ENABLE_TESTING)
   find_package(rostest REQUIRED)

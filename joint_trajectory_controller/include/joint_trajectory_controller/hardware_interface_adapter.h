@@ -40,7 +40,10 @@
 #include <ros/time.h>
 
 #include <control_toolbox/pid.h>
+#include <dart/dynamics/dynamics.h>
+#include <dart/utils/urdf/DartLoader.h>
 #include <hardware_interface/joint_command_interface.h>
+#include <r3/util/CatkinResourceRetriever.h>
 
 /**
  * \brief Helper class to simplify integrating the JointTrajectoryController with different hardware interfaces.
@@ -259,12 +262,43 @@ public:
     // Store pointer to joint handles
     joint_handles_ptr_ = &joint_handles;
 
-    // Initialize PIDs
-    pids_.resize(joint_handles.size());
-    for (unsigned int i = 0; i < pids_.size(); ++i)
+    // Load the URDF XML from the parameter server.
+    std::string robot_description_parameter;
+    controller_nh.param<std::string>("robot_description_parameter",
+                                     robot_description_parameter, "/robot_description");
+
+    std::string robot_description;
+    if (!controller_nh.getParam(robot_description_parameter, robot_description))
     {
+      ROS_ERROR("Failed loading URDF from '%s' parameter.",
+                robot_description_parameter.c_str());
+      return false;
+    }
+
+    // Load the URDF as a DART model.
+    auto const resource_retriever
+      = std::make_shared<r3::util::CatkinResourceRetriever>();
+    dart::common::Uri const base_uri;
+
+    dart::utils::DartLoader urdf_loader;
+    skeleton = urdf_loader.parseSkeletonString(
+      robot_description, base_uri, resource_retriever);
+    if (!skeleton)
+    {
+      ROS_ERROR("Failed loading URDF as a DART Skeleton.");
+      return false;
+    }
+
+    controlled_skeleton = dart::dynamics::Group::create("controlled");
+
+    pids_.resize(joint_handles.size());
+
+    // Initialize PIDs and controlled skeleton
+    for (unsigned int i = 0; i < joint_handles.size(); ++i)
+    {
+      std::string dof_name = joint_handles[i].getName();
       // Node handle to PID gains
-      ros::NodeHandle joint_nh(controller_nh, std::string("gains/") + joint_handles[i].getName());
+      ros::NodeHandle joint_nh(controller_nh, std::string("gains/") + dof_name);
 
       // Init PID gains from ROS parameter server
       pids_[i].reset(new control_toolbox::Pid());
@@ -273,6 +307,14 @@ public:
         ROS_WARN_STREAM("Failed to initialize PID gains from ROS parameter server.");
         return false;
       }
+
+      dart::dynamics::DegreeOfFreedom *const dof = skeleton->getDof(dof_name);
+      if (!dof) {
+        ROS_ERROR("There is no DOF named '%s'.", dof_name.c_str());
+        return false;
+      }
+      controlled_skeleton->addDof(dof, true);
+      // TODO need map?
     }
 
     return true;
@@ -304,11 +346,26 @@ public:
     assert(n_joints == state_error.position.size());
     assert(n_joints == state_error.velocity.size());
 
-    // Update PIDs
+    // Update dynamics model
     for (unsigned int i = 0; i < n_joints; ++i)
     {
-      const double command = pids_[i]->computeCommand(state_error.position[i], state_error.velocity[i], period);
-      (*joint_handles_ptr_)[i].setCommand(command);
+      dart::dynamics::DegreeOfFreedom *const dof = skeleton->getDof((*joint_handles_ptr_)[i].getName());
+      if (!dof) {continue;} // This should never happen.
+
+      dof->setPosition((*joint_handles_ptr_)[i].getPosition());
+      dof->setVelocity((*joint_handles_ptr_)[i].getVelocity());
+      dof->setAcceleration(0.);
+    }
+
+    skeleton->computeInverseDynamics();
+
+    // Update PIDs, compute and send commands
+    for (unsigned int i = 0; i < n_joints; ++i)
+    {
+      const double command_pid = pids_[i]->computeCommand(state_error.position[i], state_error.velocity[i], period);
+      const double command_inverse_dynamics = controlled_skeleton->getDof(i)->getForce();
+      const double command_total = command_inverse_dynamics + command_pid;
+      (*joint_handles_ptr_)[i].setCommand(command_total);
     }
   }
 
@@ -317,6 +374,9 @@ private:
   std::vector<PidPtr> pids_;
 
   std::vector<hardware_interface::JointHandle>* joint_handles_ptr_;
+
+  dart::dynamics::SkeletonPtr skeleton;
+  dart::dynamics::GroupPtr controlled_skeleton;
 };
 
 #endif // header guard
